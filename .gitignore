@@ -1,0 +1,6 @@
+*.csv
+*.zip
+*.db
+*.db.gz
+__pycache__/
+*.pyc

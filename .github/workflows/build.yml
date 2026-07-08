@@ -1,0 +1,119 @@
+name: Build and Release
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'   # 毎月1日 00:00 UTC
+  workflow_dispatch:
+    inputs:
+      source_date:
+        description: 'ソースデータの日付 (例: 2026-07-01)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download source CSV
+        run: |
+          curl -fSL -o mt_town_all.csv.zip \
+            "https://catalog.registries.digital.go.jp/rsc/address/mt_town_all.csv.zip"
+          unzip mt_town_all.csv.zip
+          ls -lh mt_town_all.csv
+
+      - name: Determine source date
+        id: meta
+        run: |
+          SOURCE_DATE="${{ github.event.inputs.source_date }}"
+          if [ -z "$SOURCE_DATE" ]; then
+            SOURCE_DATE=$(date -u '+%Y-%m-%d')
+          fi
+          TAG="v$(date -u '+%Y.%m')"
+          echo "source_date=$SOURCE_DATE" >> $GITHUB_OUTPUT
+          echo "tag=$TAG"                 >> $GITHUB_OUTPUT
+          echo "Tag: $TAG, Source date: $SOURCE_DATE"
+
+      - name: Build SQLite database
+        run: |
+          python3 scripts/build.py mt_town_all.csv address.db "${{ steps.meta.outputs.source_date }}"
+
+      - name: Compress database
+        run: |
+          gzip -k address.db
+          ls -lh address.db address.db.gz
+
+      - name: Delete existing release if same tag exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Deleting existing release $TAG ..."
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          SOURCE_DATE="${{ steps.meta.outputs.source_date }}"
+          ROWS=$(python3 -c "
+          import sqlite3
+          con = sqlite3.connect('address.db')
+          rows = con.execute(\"SELECT value FROM metadata WHERE key='rows_machiaza'\").fetchone()[0]
+          munis = con.execute(\"SELECT value FROM metadata WHERE key='rows_municipalities'\").fetchone()[0]
+          print(f'machiaza: {int(rows):,} 件 / 市区町村: {int(munis):,} 件')
+          con.close()
+          ")
+
+          gh release create "$TAG" \
+            address.db.gz \
+            address.db \
+            --title "アドレス・ベース・レジストリ ${TAG}" \
+            --notes "## デジタル庁 アドレス・ベース・レジストリ（町字マスター）SQLite 版
+
+**ソースデータ日付:** ${SOURCE_DATE}
+**収録データ:** ${ROWS}
+
+### ダウンロード
+
+| ファイル | 説明 |
+|---|---|
+| \`address.db.gz\` | gzip 圧縮済み SQLite DB（推奨） |
+| \`address.db\`    | 非圧縮 SQLite DB |
+
+### スキーマ
+
+\`\`\`
+prefectures    都道府県マスター
+municipalities 市区町村マスター
+wards          区マスター（政令指定都市）
+machiaza       町字マスター（メインテーブル）
+metadata       ビルド情報
+v_address      全結合ビュー（検索用）
+\`\`\`
+
+### 使用例
+
+\`\`\`sql
+-- 郵便番号で検索
+SELECT * FROM v_address WHERE post_code = '1000001';
+
+-- 市区町村で絞り込み
+SELECT * FROM v_address WHERE city = '千代田区';
+\`\`\`
+
+---
+ソース: [デジタル庁 アドレス・ベース・レジストリ](https://catalog.registries.digital.go.jp/rsc/address/mt_town_all.csv.zip)"
