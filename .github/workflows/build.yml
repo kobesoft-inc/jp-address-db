@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '0 0 1 * *'   # 毎月1日 00:00 UTC
   workflow_dispatch:
-    inputs:
-      source_date:
-        description: 'Source data date (e.g. 2026-07-01). Defaults to today.'
-        required: false
-        type: string
 
 permissions:
   contents: write
